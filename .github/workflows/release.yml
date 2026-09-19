@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      VERSION: 0.1.${{ github.run_number }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          architecture: x64
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pyinstaller
+      - name: Test
+        run: python -m unittest -v
+      - name: Build application
+        run: python build_exe.py
+      - name: Package ZIP and installer
+        run: |
+          Compress-Archive -Path dist/YouTubeMusicDownloader -DestinationPath "dist/YouTubeMusicDownloader-$env:VERSION-windows-x64.zip"
+          & "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe" "/DAppVersion=$env:VERSION" installer.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
+      - name: Verify distribution
+        run: ./test_distribution.ps1 -Version $env:VERSION
+      - name: Publish Release
+        run: |
+          gh release create "v$env:VERSION" "dist/YouTubeMusicDownloader-$env:VERSION-windows-x64.zip" "dist/YouTubeMusicDownloader-$env:VERSION-windows-x64-setup.exe" --target $env:GITHUB_SHA --title "v$env:VERSION" --generate-notes

@@ -1,13 +1,13 @@
 import os
 import queue
 import re
-import shutil
 import sqlite3
 import string
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -20,7 +20,17 @@ ROOT = Path(sys.executable if getattr(sys, 'frozen', False) else __file__).resol
 RESOURCES = Path(__file__).resolve().parent
 ORIGINAL_AUDIO = 'WebM / M4A / 無変換'
 QUALITIES = ('MP3 / 320 kbps', 'MP3 / 192 kbps', 'MP3 / 128 kbps', ORIGINAL_AUDIO)
-DEFAULTS = {'folder': r'E:\MUSIC', 'quality': QUALITIES[0], 'template': '{title}'}
+DEFAULTS = {'folder': str(Path.home() / 'Downloads'), 'quality': QUALITIES[0], 'template': '{title}'}
+CONVERSION_TIMEOUT = 30 * 60
+
+
+class Cancelled(Exception):
+    pass
+
+
+def check_cancel(cancel):
+    if cancel is not None and cancel.is_set():
+        raise Cancelled()
 
 
 def database_path():
@@ -82,13 +92,17 @@ class Store:
     def __init__(self, path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path)
-        self.db.executescript('''
+        try:
+            self.db.executescript('''
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS history (
                 id INTEGER PRIMARY KEY, video_id TEXT NOT NULL, title TEXT NOT NULL,
                 uploader TEXT NOT NULL, saved_at TEXT NOT NULL, quality TEXT NOT NULL, path TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS history_video ON history(video_id);
-        ''')
+            ''')
+        except sqlite3.Error:
+            self.db.close()
+            raise
 
     def settings(self):
         settings = DEFAULTS | dict(self.db.execute('SELECT key, value FROM settings'))
@@ -112,9 +126,10 @@ class Store:
         return self.db.execute('SELECT saved_at,title,uploader,quality,path FROM history ORDER BY id DESC').fetchall()
 
 
-def publish(source, folder, name):
+def publish(source, folder, name, cancel=None):
     # Exclusive creation also protects files created by another running instance.
     for number in range(1, 10000):
+        check_cancel(cancel)
         target = folder / f'{name}{"" if number == 1 else f" ({number})"}{source.suffix}'
         try:
             output = target.open('xb')
@@ -122,7 +137,10 @@ def publish(source, folder, name):
             continue
         try:
             with output, source.open('rb') as incoming:
-                shutil.copyfileobj(incoming, output)
+                while chunk := incoming.read(1024 * 1024):
+                    check_cancel(cancel)
+                    output.write(chunk)
+                check_cancel(cancel)
         except BaseException:
             target.unlink(missing_ok=True)
             raise
@@ -130,12 +148,14 @@ def publish(source, folder, name):
     raise OSError('同じ名前のファイルが多すぎます。ファイル名を変更してください。')
 
 
-def download(url, settings, events):
+def download(url, settings, events, cancel=None):
     try:
+        check_cancel(cancel)
         import imageio_ffmpeg
         import yt_dlp
 
         def progress(data):
+            check_cancel(cancel)
             if data['status'] == 'downloading':
                 total = data.get('total_bytes') or data.get('total_bytes_estimate')
                 percent = min(100, data.get('downloaded_bytes', 0) / total * 100) if total else 0
@@ -155,24 +175,43 @@ def download(url, settings, events):
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(url, download=True)
                 source = Path(ydl.prepare_filename(info))
+            check_cancel(cancel)
             if settings['quality'] != ORIGINAL_AUDIO:
                 events.put(('progress', (100, 'MP3 に変換中…')))
                 converted = Path(temp) / 'converted.mp3'
                 bitrate = settings['quality'].split(' / ')[1].split()[0] + 'k'
-                result = subprocess.run(
+                with subprocess.Popen(
                     [imageio_ffmpeg.get_ffmpeg_exe(), '-nostdin', '-hide_banner', '-loglevel', 'error',
                      '-i', str(source), '-vn', '-c:a', 'libmp3lame', '-b:a', bitrate, str(converted)],
-                    capture_output=True, text=True, encoding='utf-8', errors='replace',
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
-                if result.returncode:
-                    raise RuntimeError(f'MP3 変換に失敗しました。\n{result.stderr[-2000:]}')
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace',
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0) as process:
+                    deadline = time.monotonic() + CONVERSION_TIMEOUT
+                    try:
+                        while True:
+                            check_cancel(cancel)
+                            if time.monotonic() >= deadline:
+                                raise RuntimeError('MP3 変換が制限時間（30分）を超えました。無変換での保存をお試しください。')
+                            try:
+                                _, stderr = process.communicate(timeout=0.2)
+                                break
+                            except subprocess.TimeoutExpired:
+                                continue
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                        process.communicate()
+                    if process.returncode:
+                        raise RuntimeError(f'MP3 変換に失敗しました。\n{stderr[-2000:]}')
                 source = converted
             if not source.is_file() or source.stat().st_size == 0:
                 raise RuntimeError('音声ファイルが生成されませんでした。')
-            target = publish(source, folder, filename(settings['template'], info))
+            target = publish(source, folder, filename(settings['template'], info), cancel)
         events.put(('complete', (info, settings['quality'], target)))
     except Exception as error:
-        events.put(('error', str(error)))
+        if isinstance(error, Cancelled) or (cancel is not None and cancel.is_set()):
+            events.put(('cancelled', None))
+        else:
+            events.put(('error', str(error)))
 
 
 class App(tk.Tk):
@@ -181,10 +220,27 @@ class App(tk.Tk):
         self.title('YouTube Music Downloader')
         self.geometry('960x720')
         self.minsize(800, 600)
-        self.store = Store(database if database is not None else database_path())
+        self.withdraw()
+        data_path = database if database is not None else Path(os.environ.get('LOCALAPPDATA') or Path.home() / 'AppData' / 'Local') / 'YouTubeMusicDownloader' / 'library.sqlite3'
+        try:
+            self.store = Store(database if database is not None else database_path())
+            saved_settings = self.store.settings()
+            saved_history = self.store.history()
+        except (OSError, sqlite3.Error) as error:
+            if hasattr(self, 'store'):
+                self.store.db.close()
+            messagebox.showerror('起動できません',
+                                 f'設定・履歴を読み込めませんでした。\n保存場所: {data_path}\n\n{error}\n\n'
+                                 'フォルダーのアクセス権と空き容量を確認してください。\n'
+                                 'DBが破損している場合は、アプリを終了した状態でこのフォルダーをバックアップし、'
+                                 '正常なバックアップから復元してください。音楽ファイルは削除されません。', parent=self)
+            self.destroy()
+            raise SystemExit(1)
         self.events = queue.Queue()
         self.busy = False
-        self.vars = {key: tk.StringVar(value=value) for key, value in self.store.settings().items()}
+        self.cancel_event = threading.Event()
+        self.close_pending = False
+        self.vars = {key: tk.StringVar(value=value) for key, value in saved_settings.items()}
         self.url = tk.StringVar()
         self.status = tk.StringVar(value='動画の URL を貼り付けてください。')
         style = ttk.Style(self)
@@ -204,7 +260,9 @@ class App(tk.Tk):
         entry.bind('<Return>', lambda event: self.start())
         self.button = ttk.Button(row, text='Download', style='Accent.TButton', command=self.start)
         self.button.pack(side='right')
-        settings = ttk.LabelFrame(outer, text='保存設定', padding=14)
+        self.cancel_button = ttk.Button(row, text='キャンセル', command=self.cancel, state='disabled')
+        self.cancel_button.pack(side='right', padx=(0, 8))
+        settings = ttk.LabelFrame(outer, text='設定', padding=14)
         settings.pack(fill='x')
         settings.columnconfigure(1, weight=1)
         ttk.Label(settings, text='保存先').grid(row=0, column=0, sticky='w', padx=(0, 15))
@@ -216,6 +274,7 @@ class App(tk.Tk):
         ttk.Entry(settings, textvariable=self.vars['template']).grid(row=2, column=1, columnspan=2, sticky='ew', pady=5)
         ttk.Label(settings, text='例: {title}  /  {uploader} - {title}  /  お気に入り_{title}\n拡張子は自動で付きます。設定は終了時・Download 時にも保存します。').grid(row=3, column=1, sticky='w', pady=4)
         ttk.Button(settings, text='設定を保存', command=self.save).grid(row=4, column=2, sticky='e')
+        ttk.Button(settings, text='初期設定にリセット', command=self.reset_settings).grid(row=4, column=1, sticky='w')
         ttk.Label(outer, textvariable=self.status, wraplength=880).pack(anchor='w', pady=(14, 5))
         self.progress = ttk.Progressbar(outer, maximum=100)
         self.progress.pack(fill='x', pady=(0, 16))
@@ -236,15 +295,32 @@ class App(tk.Tk):
         vertical.grid(row=0, column=1, sticky='ns')
         horizontal.grid(row=1, column=0, sticky='ew')
         self.tree.bind('<Double-1>', self.open_folder)
-        self.refresh()
+        self.refresh(saved_history)
         self.protocol('WM_DELETE_WINDOW', self.close)
         self.after(100, self.poll)
         entry.focus_set()
+        self.deiconify()
 
     def browse(self):
         folder = filedialog.askdirectory(initialdir=self.vars['folder'].get(), mustexist=True)
         if folder:
             self.vars['folder'].set(folder)
+
+    def reset_settings(self):
+        if not messagebox.askyesno(
+                '設定のリセット',
+                '保存先・音質・ファイル名を初期設定に戻して保存しますか？\n現在の設定は失われます。ダウンロード履歴と保存済みファイルは削除しません。',
+                icon='warning', default='no', parent=self):
+            return
+        try:
+            self.store.save(DEFAULTS)
+        except sqlite3.Error as error:
+            messagebox.showerror('設定をリセットできません', str(error), parent=self)
+            return
+        for key, value in DEFAULTS.items():
+            self.vars[key].set(value)
+        if not self.busy:
+            self.status.set('設定を初期値にリセットしました。')
 
     def save(self):
         try:
@@ -277,21 +353,32 @@ class App(tk.Tk):
             self.status.set('再ダウンロードをキャンセルしました。')
             return
         self.busy = True
+        self.cancel_event.clear()
+        self.cancel_button.state(['!disabled'])
         self.button.state(['disabled'])
         self.progress['value'] = 0
         self.status.set('動画情報を取得中…')
-        threading.Thread(target=download, args=(url, settings, self.events), daemon=True).start()
+        threading.Thread(target=download, args=(url, settings, self.events, self.cancel_event), daemon=True).start()
+
+    def cancel(self):
+        if self.busy:
+            self.cancel_event.set()
+            self.cancel_button.state(['disabled'])
+            self.status.set('キャンセル中… 通信の応答待ちには時間がかかる場合があります。')
 
     def poll(self):
         try:
             while True:
                 kind, payload = self.events.get_nowait()
                 if kind == 'progress':
+                    if self.cancel_event.is_set():
+                        continue
                     self.progress['value'], text = payload
                     self.status.set(text)
                     continue
                 self.busy = False
                 self.button.state(['!disabled'])
+                self.cancel_button.state(['disabled'])
                 if kind == 'complete':
                     info, quality, path = payload
                     try:
@@ -301,17 +388,24 @@ class App(tk.Tk):
                     except sqlite3.Error as error:
                         self.status.set(f'音声は保存済み: {path}')
                         messagebox.showerror('履歴保存エラー', f'音声は保存しましたが履歴を保存できませんでした。\n{path}\n{error}', parent=self)
+                elif kind == 'cancelled':
+                    self.progress['value'] = 0
+                    self.status.set('キャンセルしました。')
                 else:
                     self.status.set('ダウンロードに失敗しました。URL とネットワークを確認してください。')
                     messagebox.showerror('ダウンロードエラー', payload, parent=self)
+                if self.close_pending:
+                    self.close_pending = False
+                    if self.close():
+                        return
         except queue.Empty:
             pass
         self.after(100, self.poll)
 
-    def refresh(self):
+    def refresh(self, rows=None):
         for item in self.tree.get_children():
             self.tree.delete(item)
-        for row in self.store.history():
+        for row in self.store.history() if rows is None else rows:
             self.tree.insert('', 'end', values=row)
 
     def open_folder(self, event):
@@ -324,11 +418,17 @@ class App(tk.Tk):
 
     def close(self):
         if self.busy:
-            messagebox.showinfo('ダウンロード中', 'ファイルの保存が完了してから終了してください。', parent=self)
-            return
-        if self.save() is not None:
+            if self.close_pending or not messagebox.askyesno('終了の確認', '処理をキャンセルして終了しますか？', default='no', parent=self):
+                return
+            if self.busy:
+                self.close_pending = True
+                self.cancel()
+                return
+        if self.save() is not None or messagebox.askyesno(
+                '保存せず終了', '設定を保存できませんでした。未保存の設定変更を破棄して終了しますか？', default='no', parent=self):
             self.store.db.close()
             self.destroy()
+            return True
 
 
 if __name__ == '__main__':

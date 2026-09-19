@@ -1,5 +1,8 @@
 import queue
+import subprocess
+import sys
 import tempfile
+import threading
 import unittest
 import wave
 from pathlib import Path
@@ -9,6 +12,70 @@ import app
 
 
 class AppTest(unittest.TestCase):
+    def test_startup_error_and_discard_on_close(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / 'broken.sqlite3'
+            database.write_bytes(b'broken database')
+            with patch('app.messagebox.showerror') as error, self.assertRaises(SystemExit):
+                app.App(database)
+            self.assertIn(str(database), error.call_args.args[1])
+            self.assertEqual(database.read_bytes(), b'broken database')
+            window = app.App(Path(directory) / 'valid.sqlite3')
+            window.withdraw()
+            closed = False
+            try:
+                window.vars['folder'].set('')
+                with patch('app.messagebox.showerror'), patch('app.messagebox.askyesno', return_value=False):
+                    window.close()
+                self.assertTrue(window.winfo_exists())
+                with patch('app.messagebox.showerror'), patch('app.messagebox.askyesno', return_value=True):
+                    closed = window.close()
+                self.assertTrue(closed)
+            finally:
+                if not closed:
+                    window.store.db.close()
+                    window.destroy()
+            window = app.App(Path(directory) / 'close.sqlite3')
+            window.withdraw()
+            window.busy = True
+            with patch('app.messagebox.askyesno', return_value=True):
+                window.close()
+            window.events.put(('cancelled', None))
+            with patch.object(window, 'destroy', wraps=window.destroy) as destroy:
+                window.poll()
+                destroy.assert_called_once()
+            window = app.App(Path(directory) / 'finished.sqlite3')
+            window.withdraw()
+            window.busy = True
+
+            def finish_while_confirming(*args, **kwargs):
+                window.busy = False
+                return True
+
+            with patch('app.messagebox.askyesno', side_effect=finish_while_confirming):
+                self.assertTrue(window.close())
+
+    def test_cancel_during_publish(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            source = folder / 'source.wav'
+            source.write_bytes(b'audio')
+            cancel = threading.Event()
+            real_check = app.check_cancel
+            calls = 0
+
+            def cancel_after_creation(event):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    cancel.set()
+                real_check(event)
+
+            with patch('app.check_cancel', side_effect=cancel_after_creation), self.assertRaises(app.Cancelled):
+                app.publish(source, folder, 'target', cancel)
+            self.assertFalse((folder / 'target.wav').exists())
+            self.assertEqual(source.read_bytes(), b'audio')
+
     def test_shared_data_location(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -98,6 +165,45 @@ class AppTest(unittest.TestCase):
                         self.assertGreater(path.stat().st_size, 0)
                         self.assertEqual(path.suffix, '.wav' if quality == app.ORIGINAL_AUDIO else '.mp3')
                         store.record(metadata, selected, path)
+                # A real sleeping child verifies that timeout/cancel actually reap the process.
+                real_popen = subprocess.Popen
+                for cancelled in (False, True):
+                    cancel = threading.Event()
+                    children = []
+
+                    def stalled_conversion(*args, **kwargs):
+                        child = real_popen([sys.executable, '-c', 'import time; time.sleep(60)'], **kwargs)
+                        children.append(child)
+                        if cancelled:
+                            cancel.set()
+                        return child
+
+                    with patch('app.subprocess.Popen', side_effect=stalled_conversion), patch.object(app, 'CONVERSION_TIMEOUT', 0):
+                        app.download(canonical, settings, events, cancel)
+                    messages = []
+                    while not events.empty():
+                        messages.append(events.get_nowait())
+                    self.assertEqual(messages[-1][0], 'cancelled' if cancelled else 'error')
+                    if not cancelled:
+                        self.assertIn('制限時間', messages[-1][1])
+                    self.assertIsNotNone(children[0].poll())
+                    self.assertFalse(list(folder.glob('.music-*')))
+
+                cancel = threading.Event()
+                cancel.set()
+                app.download(canonical, settings, events, cancel)
+                self.assertEqual(events.get_nowait(), ('cancelled', None))
+                cancel.clear()
+
+                class CancelYoutubeDL(LocalYoutubeDL):
+                    def extract_info(self, url, download):
+                        cancel.set()
+                        return super().extract_info(url, download)
+
+                with patch('yt_dlp.YoutubeDL', CancelYoutubeDL):
+                    app.download(canonical, settings, events, cancel)
+                self.assertEqual(events.get_nowait(), ('cancelled', None))
+                self.assertFalse(list(folder.glob('.music-*')))
             self.assertEqual(len(store.history()), 8)
             self.assertEqual(len({row[4] for row in store.history()}), 8)
             self.assertIsNotNone(store.previous(video_id))
@@ -127,6 +233,34 @@ class AppTest(unittest.TestCase):
                     window.poll()
                     error.assert_called_once()
                 self.assertFalse(window.busy)
+                window.busy = True
+                with patch('app.messagebox.askyesno', return_value=False):
+                    window.close()
+                self.assertFalse(window.cancel_event.is_set())
+                with patch('app.messagebox.askyesno', return_value=True):
+                    window.close()
+                self.assertTrue(window.cancel_event.is_set())
+                self.assertTrue(window.close_pending)
+                with patch.object(window, 'close') as close:
+                    window.events.put(('cancelled', None))
+                    window.poll()
+                    close.assert_called_once()
+                self.assertFalse(window.busy)
+                before = {key: var.get() for key, var in window.vars.items()}
+                with patch('app.messagebox.askyesno', return_value=False) as confirm:
+                    window.reset_settings()
+                    self.assertEqual(confirm.call_args.kwargs['icon'], 'warning')
+                    self.assertEqual(confirm.call_args.kwargs['default'], 'no')
+                self.assertEqual({key: var.get() for key, var in window.vars.items()}, before)
+                self.assertEqual(window.store.settings(), before)
+                with patch('app.messagebox.askyesno', return_value=True):
+                    window.reset_settings()
+                self.assertEqual({key: var.get() for key, var in window.vars.items()}, app.DEFAULTS)
+                reopened = app.Store(database)
+                self.assertEqual(reopened.settings(), app.DEFAULTS)
+                self.assertEqual(len(reopened.history()), 8)
+                self.assertTrue(all(Path(row[4]).is_file() for row in reopened.history()))
+                reopened.db.close()
             finally:
                 window.store.db.close()
                 window.destroy()
