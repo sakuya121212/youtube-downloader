@@ -27,6 +27,10 @@ Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
 [Files]
 Source: "dist\YouTubeMusicDownloader\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+; Remove obsolete bundled runtimes during upgrades; user data lives elsewhere.
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\_internal"
+
 [Icons]
 Name: "{userprograms}\YouTube Music Downloader"; Filename: "{app}\YouTubeMusicDownloader.exe"
 

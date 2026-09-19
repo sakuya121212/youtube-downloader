@@ -18,6 +18,7 @@ from tkinter import filedialog, messagebox, ttk
 
 ROOT = Path(sys.executable if getattr(sys, 'frozen', False) else __file__).resolve().parent
 RESOURCES = Path(__file__).resolve().parent
+FFMPEG = (RESOURCES if getattr(sys, 'frozen', False) else ROOT / 'tools') / 'ffmpeg.exe'
 ORIGINAL_AUDIO = 'WebM / M4A / 無変換'
 QUALITIES = ('MP3 / 320 kbps', 'MP3 / 192 kbps', 'MP3 / 128 kbps', ORIGINAL_AUDIO)
 DEFAULTS = {'folder': str(Path.home() / 'Downloads'), 'quality': QUALITIES[0], 'template': '{title}'}
@@ -151,7 +152,6 @@ def publish(source, folder, name, cancel=None):
 def download(url, settings, events, cancel=None):
     try:
         check_cancel(cancel)
-        import imageio_ffmpeg
         import yt_dlp
 
         def progress(data):
@@ -170,6 +170,7 @@ def download(url, settings, events, cancel=None):
                 'format': 'bestaudio', 'noplaylist': True, 'quiet': True, 'noprogress': True,
                 'outtmpl': str(Path(temp) / 'audio.%(ext)s'), 'windowsfilenames': True,
                 'progress_hooks': [progress], 'socket_timeout': 30, 'retries': 3,
+                'ffmpeg_location': str(FFMPEG.parent),
                 'js_runtimes': {'node': {'path': str(RESOURCES / 'node.exe')} if (RESOURCES / 'node.exe').is_file() else {}, 'deno': {}},
             }
             with yt_dlp.YoutubeDL(options) as ydl:
@@ -181,7 +182,7 @@ def download(url, settings, events, cancel=None):
                 converted = Path(temp) / 'converted.mp3'
                 bitrate = settings['quality'].split(' / ')[1].split()[0] + 'k'
                 with subprocess.Popen(
-                    [imageio_ffmpeg.get_ffmpeg_exe(), '-nostdin', '-hide_banner', '-loglevel', 'error',
+                    [str(FFMPEG), '-nostdin', '-hide_banner', '-loglevel', 'error',
                      '-i', str(source), '-vn', '-c:a', 'libmp3lame', '-b:a', bitrate, str(converted)],
                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace',
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0) as process:

@@ -4,4 +4,5 @@ data/
 artifacts/
 build/
 dist/
+tools/
 *.exe

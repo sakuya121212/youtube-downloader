@@ -42,18 +42,23 @@ ZIP 版は展開後の `YouTubeMusicDownloader` フォルダー内にある exe 
 アプリの配置先への書き込みは不要です。ZIP 版も設定をユーザープロファイルに保存するため、完全なポータブル版ではありません。
 以下はソース版の起動・更新手順です。exe に更新を反映するには再ビルドしてください。
 
-Python 3.12 以降（Tkinter を含む）と Node.js 22 以降を用意して `start.bat` を実行します。
-初回はインターネットから依存パッケージを取得します。FFmpeg は Python パッケージに同梱されます。
-YouTube の仕様変更で失敗する場合は以下で更新してください。
+Python 3.14.7（64bit、Tkinter を含む）と Node.js 22.23.2 を用意して `start.bat` を実行します。
+旧Pythonで作成した `.venv` は名前を変更してから実行し、3.14で作り直してください。
+依存パッケージは Windows x64 / Python 3.14 用にバージョンと SHA-256 を固定しています。
+FFmpeg 9.0.1 / FFprobe は `prepare_ffmpeg.py` が公式サイトから案内される Gyan のビルドを取得し、
+固定した SHA-256 を検証して `tools/` に配置します。ハッシュ不一致は展開前に停止します。
+リポジトリ更新後に手動で依存を反映する場合:
 
 ```powershell
-.venv\Scripts\python.exe -m pip install --upgrade -r requirements.txt
+.venv\Scripts\python.exe -m pip install --require-hashes --only-binary=:all: -r requirements.txt
+.venv\Scripts\python.exe prepare_ffmpeg.py
 ```
 
 exe の再ビルド（[PyInstaller](https://www.pyinstaller.org/en/stable/usage.html) を使用）:
 
 ```powershell
-.venv\Scripts\python.exe -m pip install pyinstaller
+.venv\Scripts\python.exe -m pip install --require-hashes --only-binary=:all: -r requirements-build.txt
+.venv\Scripts\python.exe prepare_ffmpeg.py
 .venv\Scripts\python.exe build_exe.py
 ```
 
@@ -68,6 +73,7 @@ Compress-Archive -Path dist/YouTubeMusicDownloader -DestinationPath dist/YouTube
 Windows 10 以降の x64 向けです。インストーラーは管理者権限不要で、
 `%LOCALAPPDATA%\Programs\YouTubeMusicDownloader` に配置し、スタートメニューにショートカットを作成します。
 更新時はアプリを終了して新しいインストーラーを実行してください。
+インストーラー更新時はアプリ管理下の `_internal` を入れ替え、古いランタイムも削除します。
 アンインストールしても設定・履歴・保存した音楽は削除しません。アプリ内の自動更新機能は含みません。
 
 ## GitHub Release
@@ -77,7 +83,16 @@ Windows 10 以降の x64 向けです。インストーラーは管理者権限�
 テスト、exe ビルド、ZIP・インストーラー作成、起動・インストール・アンインストールの検証が成功した場合に Release を登録します。
 バージョンは `0.1.<github.run_number>`、タグは `v0.1.<github.run_number>` です。失敗した実行の番号は欠番になります。
 Actions の「Run workflow」から main を指定して手動リリースもできます。
-署名は設定していません。依存パッケージは各ビルド時に取得します。
+ビルドは読み取り権限のみで実行し、認証情報を checkout に保存しません。
+公開専用ジョブだけに Release 書き込み権限を与え、配布物を実行せずアップロードします。
+Actions はコミット SHA 固定です。各 Release の `DEPENDENCIES.json` に Python・Node・FFmpeg とパッケージの実バージョンを記録します。
+署名は設定していません。
+
+Dependabot が Python 依存と Actions の更新 PR を毎週確認します。マージ前にバージョン・ハッシュと変更内容を確認してください。
+Python・Node の固定バージョンと FFmpeg の URL・SHA-256 はセキュリティ更新時に明示的に更新します。
+依存を手動更新するときは Python 3.14 / Windows x64 で `pip download --only-binary=:all:` により対象 wheel を取得し、
+`pip hash <wheel>` の結果と全推移依存のバージョンを requirements ファイルへ反映してください。
+固定したまま放置せず、少なくとも月次およびセキュリティ修正の公開時にランタイムも確認してください。
 
 YouTube の取得処理には [yt-dlp](https://github.com/yt-dlp/yt-dlp) を使用しています。
 JavaScript 実行環境と EJS の設定は [公式ガイド](https://github.com/yt-dlp/yt-dlp/wiki/EJS) に従っています。

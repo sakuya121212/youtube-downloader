@@ -8,9 +8,14 @@ Expand-Archive "dist/YouTubeMusicDownloader-$Version-windows-x64.zip" $extract
 $payload = Join-Path $extract 'YouTubeMusicDownloader'
 & "$payload/_internal/node.exe" --version
 if ($LASTEXITCODE -ne 0) { throw 'Bundled Node.js failed' }
-$ffmpeg = Get-ChildItem "$payload/_internal/imageio_ffmpeg/binaries/ffmpeg*.exe" | Select-Object -First 1
-& $ffmpeg.FullName -version
+$ffmpegVersion = & "$payload/_internal/ffmpeg.exe" -version
 if ($LASTEXITCODE -ne 0) { throw 'Bundled FFmpeg failed' }
+if ($ffmpegVersion[0] -notmatch '^ffmpeg version 9\.0\.1-') { throw 'Unexpected FFmpeg version' }
+& "$payload/_internal/ffprobe.exe" -version
+if ($LASTEXITCODE -ne 0) { throw 'Bundled FFprobe failed' }
+$manifest = Get-Content "$payload/DEPENDENCIES.json" -Raw | ConvertFrom-Json
+if ($manifest.python -notmatch '^3\.14\.7 ' -or $manifest.ffmpeg.version -ne '9.0.1') { throw 'Unexpected bundled runtimes' }
+if (Test-Path "$payload/_internal/imageio_ffmpeg") { throw 'Obsolete FFmpeg bundle is present' }
 
 # Both formats must start and share their database, even after uninstall.
 $install = Join-Path $env:RUNNER_TEMP 'installed-app'
@@ -36,6 +41,12 @@ foreach ($folder in @($payload, $install)) {
 }
 $database = Join-Path $env:LOCALAPPDATA 'YouTubeMusicDownloader/library.sqlite3'
 $before = (Get-FileHash $database).Hash
+# Upgrades must remove obsolete runtime files without touching settings/history.
+Set-Content "$install/_internal/obsolete-runtime.txt" 'old runtime'
+$process = Start-Process $setup -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$install`"") -WindowStyle Hidden -PassThru -Wait
+if ($process.ExitCode -ne 0) { throw 'Upgrade failed' }
+if (Test-Path "$install/_internal/obsolete-runtime.txt") { throw 'Upgrade retained obsolete runtimes' }
+if ((Get-FileHash $database).Hash -ne $before) { throw 'Upgrade changed user data' }
 $process = Start-Process "$install/unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -WindowStyle Hidden -PassThru -Wait
 if ($process.ExitCode -ne 0) { throw 'Uninstall failed' }
 if (Test-Path "$install/YouTubeMusicDownloader.exe") { throw 'Uninstall left the application behind' }
