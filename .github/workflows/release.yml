@@ -46,7 +46,7 @@ jobs:
         run: python build_exe.py
       - name: Package ZIP and installer
         run: |
-          Compress-Archive -Path dist/YouTubeMusicDownloader -DestinationPath "dist/YouTubeMusicDownloader-$env:VERSION-windows-x64.zip"
+          Compress-Archive -Path dist/YouTubeDownloader -DestinationPath "dist/YouTubeDownloader-$env:VERSION-windows-x64.zip"
           & "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe" "/DAppVersion=$env:VERSION" installer.iss
           if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
       - name: Verify distribution
@@ -59,7 +59,7 @@ jobs:
           path: |
             dist/*-windows-x64.zip
             dist/*-windows-x64-setup.exe
-            dist/YouTubeMusicDownloader/DEPENDENCIES.json
+            dist/YouTubeDownloader/DEPENDENCIES.json
   publish:
     needs: build
     runs-on: ubuntu-latest
@@ -77,4 +77,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "v$VERSION" release-files/*-windows-x64.zip release-files/*-windows-x64-setup.exe release-files/YouTubeMusicDownloader/DEPENDENCIES.json --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes
+          gh release create "v$VERSION" release-files/*-windows-x64.zip release-files/*-windows-x64-setup.exe release-files/YouTubeDownloader/DEPENDENCIES.json --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes

@@ -4,19 +4,19 @@
 
 [Setup]
 AppId={{5918B153-67A0-4832-A0F6-C6E2A490024A}
-AppName=YouTube Music Downloader
+AppName=YouTube Downloader
 AppVersion={#AppVersion}
-DefaultDirName={localappdata}\Programs\YouTubeMusicDownloader
+DefaultDirName={localappdata}\Programs\YouTubeDownloader
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 OutputDir=dist
-OutputBaseFilename=YouTubeMusicDownloader-{#AppVersion}-windows-x64-setup
+OutputBaseFilename=YouTubeDownloader-{#AppVersion}-windows-x64-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-UninstallDisplayIcon={app}\YouTubeMusicDownloader.exe
+UninstallDisplayIcon={app}\YouTubeDownloader.exe
 CloseApplications=yes
 RestartApplications=no
 
@@ -25,14 +25,16 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
 
 [Files]
-Source: "dist\YouTubeMusicDownloader\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\YouTubeDownloader\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 ; Remove obsolete bundled runtimes during upgrades; user data lives elsewhere.
 [InstallDelete]
 Type: filesandordirs; Name: "{app}\_internal"
+Type: files; Name: "{app}\YouTubeMusicDownloader.exe"
+Type: files; Name: "{userprograms}\YouTube Music Downloader.lnk"
 
 [Icons]
-Name: "{userprograms}\YouTube Music Downloader"; Filename: "{app}\YouTubeMusicDownloader.exe"
+Name: "{userprograms}\YouTube Downloader"; Filename: "{app}\YouTubeDownloader.exe"
 
 [Run]
-Filename: "{app}\YouTubeMusicDownloader.exe"; Description: "Launch YouTube Music Downloader"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\YouTubeDownloader.exe"; Description: "Launch YouTube Downloader"; Flags: nowait postinstall skipifsilent

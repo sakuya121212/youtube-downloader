@@ -4,8 +4,8 @@ $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Run this installation test in GitHub Actions only.' }
 
 $extract = Join-Path $env:RUNNER_TEMP 'zip-test'
-Expand-Archive "dist/YouTubeMusicDownloader-$Version-windows-x64.zip" $extract
-$payload = Join-Path $extract 'YouTubeMusicDownloader'
+Expand-Archive "dist/YouTubeDownloader-$Version-windows-x64.zip" $extract
+$payload = Join-Path $extract 'YouTubeDownloader'
 & "$payload/_internal/node.exe" --version
 if ($LASTEXITCODE -ne 0) { throw 'Bundled Node.js failed' }
 $ffmpegVersion = & "$payload/_internal/ffmpeg.exe" -version
@@ -19,11 +19,11 @@ if (Test-Path "$payload/_internal/imageio_ffmpeg") { throw 'Obsolete FFmpeg bund
 
 # Both formats must start and share their database, even after uninstall.
 $install = Join-Path $env:RUNNER_TEMP 'installed-app'
-$setup = (Resolve-Path "dist/YouTubeMusicDownloader-$Version-windows-x64-setup.exe").Path
+$setup = (Resolve-Path "dist/YouTubeDownloader-$Version-windows-x64-setup.exe").Path
 $process = Start-Process $setup -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$install`"") -WindowStyle Hidden -PassThru -Wait
 if ($process.ExitCode -ne 0) { throw "Install failed: $($process.ExitCode)" }
 foreach ($folder in @($payload, $install)) {
-    $process = Start-Process "$folder/YouTubeMusicDownloader.exe" -WindowStyle Hidden -PassThru
+    $process = Start-Process "$folder/YouTubeDownloader.exe" -WindowStyle Hidden -PassThru
     try {
         $ready = $false
         for ($attempt = 0; $attempt -lt 30; $attempt++) {
@@ -49,5 +49,5 @@ if (Test-Path "$install/_internal/obsolete-runtime.txt") { throw 'Upgrade retain
 if ((Get-FileHash $database).Hash -ne $before) { throw 'Upgrade changed user data' }
 $process = Start-Process "$install/unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -WindowStyle Hidden -PassThru -Wait
 if ($process.ExitCode -ne 0) { throw 'Uninstall failed' }
-if (Test-Path "$install/YouTubeMusicDownloader.exe") { throw 'Uninstall left the application behind' }
+if (Test-Path "$install/YouTubeDownloader.exe") { throw 'Uninstall left the application behind' }
 if ((Get-FileHash $database).Hash -ne $before) { throw 'Uninstall changed user data' }

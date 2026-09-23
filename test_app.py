@@ -1,10 +1,13 @@
 import queue
+import json
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
 import unittest
 import wave
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +15,165 @@ import app
 
 
 class AppTest(unittest.TestCase):
+    def test_compact_layout_and_progress_states(self):
+        with tempfile.TemporaryDirectory() as directory:
+            window = app.App(Path(directory) / 'library.sqlite3')
+            try:
+                window.geometry('800x600')
+                for tab in window.tabs.values():
+                    window.notebook.select(tab)
+                    window.update()
+                    self.assertFalse(tab.details.winfo_ismapped())
+                    tab.toggle_settings()
+                    window.update()
+                    self.assertTrue(tab.details.winfo_ismapped())
+                    self.assertGreater(tab.tree.winfo_height(), 30)
+                    tab.vars['template'].set('saved_{title}')
+                    tab.toggle_settings()
+                    self.assertEqual(tab.save()['template'], 'saved_{title}')
+                    window.update()
+                    self.assertEqual(tab.tree.xview(), (0.0, 1.0))
+                    path = str(Path(directory) / 'long filename.mp3')
+                    tab.refresh([('2026-09-23', 'title', 'uploader', 'MP3', path)])
+                    tab.tree.selection_set(tab.tree.get_children()[0])
+                    window.update()
+                    self.assertEqual(tab.history_path.get(), path)
+                    tab.refresh([])
+                    window.update()
+                    self.assertEqual(tab.history_path.get(), '')
+                    for value in (None, 40, None):
+                        tab.events.put(('progress', (value, 'processing')))
+                        tab.poll()
+                        self.assertEqual(str(tab.progress['mode']), 'indeterminate' if value is None else 'determinate')
+                    for kind, payload in (
+                        ('complete', ({'id': 'test', 'title': 'title'}, 'MP3', Path(path))),
+                        ('cancelled', None), ('error', 'test error'),
+                    ):
+                        tab.set_progress(None)
+                        tab.events.put((kind, payload))
+                        with patch('app.messagebox.showerror'):
+                            tab.poll()
+                        self.assertEqual(str(tab.progress['mode']), 'determinate')
+                        self.assertEqual(tab.progress['value'], 100 if kind == 'complete' else 0)
+            finally:
+                window.store.db.close()
+                window.destroy()
+
+    def test_video_workflow_and_tabs(self):
+        import yt_dlp
+
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            database = folder / 'library.sqlite3'
+            # Upgrade a database from before tabs existed.
+            with closing(sqlite3.connect(database)) as legacy:
+                legacy.execute('CREATE TABLE history (id INTEGER PRIMARY KEY, video_id TEXT NOT NULL, title TEXT NOT NULL, uploader TEXT NOT NULL, saved_at TEXT NOT NULL, quality TEXT NOT NULL, path TEXT NOT NULL)')
+                legacy.execute("INSERT INTO history VALUES (1, 'BaW_jenozKc', 'old', '', '2026-01-01', 'MP3', 'old.mp3')")
+                legacy.commit()
+            with closing(app.Store(database).db) as legacy:
+                legacy.execute("INSERT INTO settings VALUES ('video.resolution', '360p')")
+                legacy.commit()
+            window = app.App(database)
+            window.withdraw()
+            music, video = window.tabs.values()
+            try:
+                self.assertEqual(window.title(), 'YouTube Downloader')
+                self.assertEqual(video.vars['resolution'].get(), 'MKV / 360p')
+                for old_resolution, label in zip(('最高画質', '2160p', '1440p', '1080p', '720p', '480p', '360p'), app.VIDEO_QUALITIES):
+                    window.store.save({'resolution': old_resolution}, 'video')
+                    self.assertEqual(window.store.settings('video')['resolution'], label)
+                self.assertEqual(window.notebook.select(), str(music))
+                self.assertEqual(len(music.tree.get_children()), 1)
+                self.assertFalse(video.tree.get_children())
+                music.vars['template'].set('music_{title}')
+                video.vars['template'].set('video_{title}')
+                video.vars['folder'].set(str(folder))
+                video.vars['resolution'].set('MKV / 360p')
+                window.notebook.select(video)
+                window.update()
+                self.assertEqual(music.vars['template'].get(), 'music_{title}')
+                self.assertTrue(window.close())
+                window = app.App(database)
+                window.withdraw()
+                music, video = window.tabs.values()
+                self.assertEqual(window.notebook.select(), str(music))
+                self.assertEqual(music.vars['template'].get(), 'music_{title}')
+                self.assertEqual(video.vars['template'].get(), 'video_{title}')
+                self.assertEqual(video.vars['resolution'].get(), 'MKV / 360p')
+                video.vars['resolution'].set('invalid')
+                with patch('app.messagebox.showerror') as error:
+                    self.assertIsNone(video.save())
+                    error.assert_called_once()
+                with patch('app.messagebox.askyesno', return_value=True):
+                    video.reset_settings()
+                self.assertEqual(window.store.settings('video'), app.VIDEO_DEFAULTS)
+                self.assertEqual(window.store.settings()['template'], 'music_{title}')
+
+                formats = []
+                for height in (360, 720):
+                    fixture = folder / f'fixture{height}.mp4'
+                    subprocess.run([str(app.FFMPEG), '-hide_banner', '-loglevel', 'error',
+                                    '-f', 'lavfi', '-i', f'color=size={height * 2}x{height}:rate=10',
+                                    '-t', '0.2', '-an', '-c:v', 'libx264', str(fixture)], check=True)
+                    formats.append({'format_id': str(height), 'url': fixture.as_uri(), 'ext': 'mp4',
+                                    'height': height, 'vcodec': 'h264', 'acodec': 'none'})
+                audio = folder / 'fixture.m4a'
+                subprocess.run([str(app.FFMPEG), '-hide_banner', '-loglevel', 'error', '-f', 'lavfi',
+                                '-i', 'sine=frequency=440', '-t', '0.2', '-c:a', 'aac', str(audio)], check=True)
+                formats.append({'format_id': 'audio', 'url': audio.as_uri(), 'ext': 'm4a',
+                                'vcodec': 'none', 'acodec': 'aac'})
+
+                class LocalYoutubeDL(yt_dlp.YoutubeDL):
+                    def __init__(self, options):
+                        super().__init__(options | {'enable_file_urls': True})
+
+                    def extract_info(self, url, download=True):
+                        return self.process_ie_result({'id': 'BaW_jenozKc', 'title': 'video',
+                                                       'extractor': 'local', 'formats': formats}, download=download)
+
+                with patch('yt_dlp.YoutubeDL', LocalYoutubeDL):
+                    for resolution, quality in [('MKV / 360p', quality) for quality in app.VIDEO_AUDIO] + [('MKV / 720p', app.VIDEO_AUDIO[0]), (app.VIDEO_QUALITIES[0], app.VIDEO_AUDIO[0])]:
+                        settings = app.VIDEO_DEFAULTS | {'folder': str(folder), 'resolution': resolution, 'quality': quality}
+                        app.download('https://www.youtube.com/watch?v=BaW_jenozKc', settings, video.events, mode='video')
+                        messages = []
+                        while not video.events.empty():
+                            messages.append(video.events.get_nowait())
+                        kind, payload = messages[-1]
+                        self.assertEqual(kind, 'complete', payload)
+                        self.assertTrue(any(event == 'progress' and value[0] is None for event, value in messages))
+                        info, selected, path = payload
+                        self.assertEqual(path.suffix, '.mkv')
+                        probe = subprocess.run([str(app.FFMPEG.with_name('ffprobe.exe')), '-v', 'error',
+                                                '-show_streams', '-of', 'json', str(path)], check=True, capture_output=True, text=True)
+                        streams = json.loads(probe.stdout)['streams']
+                        self.assertEqual([stream['codec_type'] for stream in streams], ['video', 'audio'])
+                        self.assertEqual(streams[0]['height'], 360 if resolution == 'MKV / 360p' else 720)
+                        self.assertEqual(streams[1]['codec_name'], 'aac')
+                        video.events.put((kind, payload))
+                        video.poll()
+                self.assertEqual(len(window.store.history('video')), 6)
+                self.assertEqual(len(window.store.history()), 1)
+                self.assertEqual(len({row[4] for row in window.store.history('video')}), 6)
+                self.assertFalse(list(folder.glob('.video-*')))
+                video.url.set('https://youtu.be/BaW_jenozKc')
+                with patch('app.messagebox.askyesno', return_value=False), patch('app.threading.Thread') as worker:
+                    video.start()
+                    worker.assert_not_called()
+                music.busy = video.busy = True
+                with patch('app.messagebox.askyesno', return_value=True):
+                    window.close()
+                self.assertTrue(music.cancel_event.is_set() and video.cancel_event.is_set())
+                music.events.put(('cancelled', None))
+                music.poll()
+                self.assertTrue(window.close_pending)
+                video.events.put(('cancelled', None))
+                with patch.object(window, 'close') as close:
+                    video.poll()
+                    close.assert_called_once()
+            finally:
+                window.store.db.close()
+                window.destroy()
+
     def test_startup_error_and_discard_on_close(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / 'broken.sqlite3'
@@ -24,7 +186,7 @@ class AppTest(unittest.TestCase):
             window.withdraw()
             closed = False
             try:
-                window.vars['folder'].set('')
+                window.tabs['music'].vars['folder'].set('')
                 with patch('app.messagebox.showerror'), patch('app.messagebox.askyesno', return_value=False):
                     window.close()
                 self.assertTrue(window.winfo_exists())
@@ -37,19 +199,19 @@ class AppTest(unittest.TestCase):
                     window.destroy()
             window = app.App(Path(directory) / 'close.sqlite3')
             window.withdraw()
-            window.busy = True
+            window.tabs['music'].busy = True
             with patch('app.messagebox.askyesno', return_value=True):
                 window.close()
-            window.events.put(('cancelled', None))
+            window.tabs['music'].events.put(('cancelled', None))
             with patch.object(window, 'destroy', wraps=window.destroy) as destroy:
-                window.poll()
+                window.tabs['music'].poll()
                 destroy.assert_called_once()
             window = app.App(Path(directory) / 'finished.sqlite3')
             window.withdraw()
-            window.busy = True
+            window.tabs['music'].busy = True
 
             def finish_while_confirming(*args, **kwargs):
-                window.busy = False
+                window.tabs['music'].busy = False
                 return True
 
             with patch('app.messagebox.askyesno', side_effect=finish_while_confirming):
@@ -217,45 +379,45 @@ class AppTest(unittest.TestCase):
             window.withdraw()
             try:
                 window.update()
-                self.assertEqual(window.vars['template'].get(), settings['template'])
-                self.assertEqual(len(window.tree.get_children()), 8)
-                window.url.set(canonical + '&list=test')
+                self.assertEqual(window.tabs['music'].vars['template'].get(), settings['template'])
+                self.assertEqual(len(window.tabs['music'].tree.get_children()), 8)
+                window.tabs['music'].url.set(canonical + '&list=test')
                 with patch('app.messagebox.askyesno', return_value=False) as confirm, patch('app.threading.Thread') as worker:
-                    window.start()
+                    window.tabs['music'].start()
                     confirm.assert_called_once()
                     worker.assert_not_called()
                 with patch('app.messagebox.askyesno', return_value=True), patch('app.threading.Thread') as worker:
-                    window.start()
+                    window.tabs['music'].start()
                     worker.return_value.start.assert_called_once()
-                    self.assertTrue(window.busy)
-                window.events.put(('error', 'test error'))
+                    self.assertTrue(window.tabs['music'].busy)
+                window.tabs['music'].events.put(('error', 'test error'))
                 with patch('app.messagebox.showerror') as error:
-                    window.poll()
+                    window.tabs['music'].poll()
                     error.assert_called_once()
-                self.assertFalse(window.busy)
-                window.busy = True
+                self.assertFalse(window.tabs['music'].busy)
+                window.tabs['music'].busy = True
                 with patch('app.messagebox.askyesno', return_value=False):
                     window.close()
-                self.assertFalse(window.cancel_event.is_set())
+                self.assertFalse(window.tabs['music'].cancel_event.is_set())
                 with patch('app.messagebox.askyesno', return_value=True):
                     window.close()
-                self.assertTrue(window.cancel_event.is_set())
+                self.assertTrue(window.tabs['music'].cancel_event.is_set())
                 self.assertTrue(window.close_pending)
                 with patch.object(window, 'close') as close:
-                    window.events.put(('cancelled', None))
-                    window.poll()
+                    window.tabs['music'].events.put(('cancelled', None))
+                    window.tabs['music'].poll()
                     close.assert_called_once()
-                self.assertFalse(window.busy)
-                before = {key: var.get() for key, var in window.vars.items()}
+                self.assertFalse(window.tabs['music'].busy)
+                before = {key: var.get() for key, var in window.tabs['music'].vars.items()}
                 with patch('app.messagebox.askyesno', return_value=False) as confirm:
-                    window.reset_settings()
+                    window.tabs['music'].reset_settings()
                     self.assertEqual(confirm.call_args.kwargs['icon'], 'warning')
                     self.assertEqual(confirm.call_args.kwargs['default'], 'no')
-                self.assertEqual({key: var.get() for key, var in window.vars.items()}, before)
+                self.assertEqual({key: var.get() for key, var in window.tabs['music'].vars.items()}, before)
                 self.assertEqual(window.store.settings(), before)
                 with patch('app.messagebox.askyesno', return_value=True):
-                    window.reset_settings()
-                self.assertEqual({key: var.get() for key, var in window.vars.items()}, app.DEFAULTS)
+                    window.tabs['music'].reset_settings()
+                self.assertEqual({key: var.get() for key, var in window.tabs['music'].vars.items()}, app.DEFAULTS)
                 reopened = app.Store(database)
                 self.assertEqual(reopened.settings(), app.DEFAULTS)
                 self.assertEqual(len(reopened.history()), 8)

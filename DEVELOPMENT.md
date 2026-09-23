@@ -24,11 +24,11 @@ exe の再ビルド（[PyInstaller](https://www.pyinstaller.org/en/stable/usage.
 .venv\Scripts\python.exe build_exe.py
 ```
 
-成果物は `dist/YouTubeMusicDownloader/` です。このフォルダー全体を ZIP 化します。
+成果物は `dist/YouTubeDownloader/` です。このフォルダー全体を ZIP 化します。
 インストーラーは [Inno Setup 6](https://jrsoftware.org/isinfo.php) で作成します。
 
 ```powershell
-Compress-Archive -Path dist/YouTubeMusicDownloader -DestinationPath dist/YouTubeMusicDownloader-0.1.0-windows-x64.zip
+Compress-Archive -Path dist/YouTubeDownloader -DestinationPath dist/YouTubeDownloader-0.1.0-windows-x64.zip
 & "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe" /DAppVersion=0.1.0 installer.iss
 ```
 
@@ -61,5 +61,6 @@ Python・Node の固定バージョンと FFmpeg の URL・SHA-256 はセキュ�
 ```
 
 ネットワーク取得をローカル音声に置き換え、URL 判定、設定の永続化、実際の MP3 変換、同名ファイル保護、履歴、再取得確認、エラー復帰を検証します。
+動画はローカルの映像・音声を実際の yt-dlp／FFmpeg で取得・結合し、画質選択と各音質設定で保存した MKV を FFprobe で検証します。タブごとの設定・履歴、旧DB移行、起動タブ、両タブのキャンセルも確認します。
 
 2026-09-13 に上記テストの成功と、公開動画「Me at the zoo」の音声を YouTube から WebM で取得できることを確認しました。
