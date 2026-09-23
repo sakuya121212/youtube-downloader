@@ -362,18 +362,38 @@ class DownloadTab(ttk.Frame):
         settings = ttk.LabelFrame(outer, text=' 保存設定 ', padding=(14, 8))
         settings.pack(fill='x')
         settings.columnconfigure(1, weight=1)
+        settings.columnconfigure(3, weight=1)
         ttk.Label(settings, text='保存先').grid(row=0, column=0, sticky='w', padx=(0, 15))
-        ttk.Entry(settings, textvariable=self.vars['folder']).grid(row=0, column=1, sticky='ew', pady=3)
-        ttk.Button(settings, text='参照…', command=self.browse).grid(row=0, column=2, padx=(8, 0))
-        ttk.Label(settings, text='音質').grid(row=1, column=0, sticky='w')
-        ttk.Combobox(settings, textvariable=self.vars['quality'], values=self.qualities, state='readonly').grid(row=1, column=1, sticky='ew', pady=3)
+        ttk.Entry(settings, textvariable=self.vars['folder']).grid(row=0, column=1, columnspan=3, sticky='ew', pady=3)
+        ttk.Button(settings, text='参照…', command=self.browse).grid(row=0, column=4, padx=(8, 0))
+        self.audio_format = tk.StringVar()
+        self.bitrate = tk.StringVar()
+        self.container = tk.StringVar()
+        self.resolution = tk.StringVar()
+        self.load_quality_controls()
+        audio_row = [
+            ('音声処理' if mode == 'video' else '保存形式', self.audio_format,
+             ('無変換', 'AAC') if mode == 'video' else ('MP3', '元の形式')),
+            ('音質', self.bitrate, ('320 kbps', '192 kbps', '128 kbps')),
+        ]
+        rows = [audio_row]
         if mode == 'video':
-            ttk.Label(settings, text='画質').grid(row=2, column=0, sticky='w')
-            ttk.Combobox(settings, textvariable=self.vars['resolution'], values=VIDEO_QUALITIES, state='readonly').grid(row=2, column=1, sticky='ew', pady=3)
+            rows.insert(0, [('保存形式', self.container, ('MP4', 'MKV')),
+                            ('画質', self.resolution, tuple(value.split(' / ')[1] for value in VIDEO_QUALITIES[:7]))])
+        for row_number, fields in enumerate(rows, 1):
+            for column, (label, variable, values) in enumerate(fields):
+                ttk.Label(settings, text=label).grid(row=row_number, column=column * 2, sticky='w', padx=(8 if column else 0, 15))
+                combo = ttk.Combobox(settings, textvariable=variable, values=values, state='readonly', width=14)
+                combo.grid(row=row_number, column=column * 2 + 1, sticky='ew', pady=3)
+                if variable is self.bitrate:
+                    self.bitrate_combo = combo
+        for variable in (self.audio_format, self.bitrate, self.container, self.resolution):
+            variable.trace_add('write', self.sync_quality_controls)
+        self.sync_quality_controls()
         self.details_button = ttk.Button(settings, text='詳細設定を開く', command=self.toggle_settings)
-        self.details_button.grid(row=3, column=0, columnspan=3, sticky='w', pady=(6, 0))
+        self.details_button.grid(row=3, column=0, columnspan=5, sticky='w', pady=(6, 0))
         self.details = ttk.Frame(settings)
-        self.details.grid(row=4, column=0, columnspan=3, sticky='ew', pady=(4, 0))
+        self.details.grid(row=4, column=0, columnspan=5, sticky='ew', pady=(4, 0))
         self.details.columnconfigure(1, weight=1)
         ttk.Label(self.details, text='ファイル名').grid(row=0, column=0, sticky='w', padx=(0, 15))
         ttk.Entry(self.details, textvariable=self.vars['template']).grid(row=0, column=1, columnspan=2, sticky='ew', pady=3)
@@ -421,6 +441,27 @@ class DownloadTab(ttk.Frame):
         self.progress.stop()
         super().destroy()
 
+    def load_quality_controls(self):
+        # Keep the stored/download settings compatible with earlier versions.
+        quality = self.vars['quality'].get()
+        resolution = self.vars['resolution'].get() if self.mode == 'video' else ''
+        original = quality in (ORIGINAL_AUDIO, VIDEO_AUDIO[0])
+        audio_format, _, bitrate = quality.partition(' / ')
+        self.audio_format.set(('無変換' if self.mode == 'video' else '元の形式') if original else audio_format)
+        self.bitrate.set('320 kbps' if original else bitrate)
+        container, _, height = resolution.partition(' / ')
+        self.container.set(container)
+        self.resolution.set(height)
+
+    def sync_quality_controls(self, *args):
+        audio_format = self.audio_format.get()
+        original = audio_format == ('無変換' if self.mode == 'video' else '元の形式')
+        self.bitrate_combo.configure(state='disabled' if original else 'readonly')
+        quality = (VIDEO_AUDIO[0] if self.mode == 'video' else ORIGINAL_AUDIO) if original else f'{audio_format} / {self.bitrate.get()}'
+        self.vars['quality'].set(quality)
+        if self.mode == 'video':
+            self.vars['resolution'].set(f'{self.container.get()} / {self.resolution.get()}')
+
     def toggle_settings(self):
         if self.details.winfo_manager():
             self.details.grid_remove()
@@ -460,6 +501,7 @@ class DownloadTab(ttk.Frame):
             return
         for key, value in self.defaults.items():
             self.vars[key].set(value)
+        self.load_quality_controls()
         if not self.busy:
             self.status.set('設定を初期値にリセットしました。')
 

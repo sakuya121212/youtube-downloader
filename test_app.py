@@ -64,6 +64,56 @@ class AppTest(unittest.TestCase):
                 window.store.db.close()
                 window.destroy()
 
+    def test_separate_format_and_quality_controls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / 'library.sqlite3'
+            window = app.App(database)
+            window.withdraw()
+            try:
+                for mode, tab in window.tabs.items():
+                    original = '無変換' if mode == 'video' else '元の形式'
+                    converted = 'AAC' if mode == 'video' else 'MP3'
+                    for quality in tab.qualities:
+                        tab.vars['quality'].set(quality)
+                        tab.load_quality_controls()
+                        self.assertEqual(tab.save()['quality'], quality)
+                    tab.audio_format.set(converted)
+                    tab.bitrate.set('192 kbps')
+                    self.assertEqual(tab.save()['quality'], f'{converted} / 192 kbps')
+                    tab.audio_format.set(original)
+                    self.assertTrue(tab.bitrate_combo.instate(['disabled']))
+                    self.assertEqual(tab.save()['quality'], app.VIDEO_AUDIO[0] if mode == 'video' else app.ORIGINAL_AUDIO)
+                    tab.audio_format.set(converted)
+                    self.assertTrue(tab.bitrate_combo.instate(['readonly', '!disabled']))
+                    self.assertEqual(tab.bitrate.get(), '192 kbps')
+                    tab.bitrate.set('invalid')
+                    with patch('app.messagebox.showerror') as error:
+                        self.assertIsNone(tab.save())
+                        error.assert_called_once()
+                    tab.bitrate.set('128 kbps')
+                video = window.tabs['video']
+                for resolution in app.VIDEO_QUALITIES:
+                    video.vars['resolution'].set(resolution)
+                    video.load_quality_controls()
+                    self.assertEqual(video.save()['resolution'], resolution)
+                video.container.set('MP4')
+                video.resolution.set('1080p')
+                self.assertTrue(window.close())
+                window = app.App(database)
+                window.withdraw()
+                music, video = window.tabs.values()
+                self.assertEqual((music.audio_format.get(), music.bitrate.get()), ('MP3', '128 kbps'))
+                self.assertEqual((video.container.get(), video.resolution.get(), video.audio_format.get(), video.bitrate.get()),
+                                 ('MP4', '1080p', 'AAC', '128 kbps'))
+                for mode, tab in window.tabs.items():
+                    with patch('app.messagebox.askyesno', return_value=True):
+                        tab.reset_settings()
+                    self.assertEqual(tab.save(), tab.defaults)
+                    self.assertEqual(tab.bitrate_combo.instate(['disabled']), mode == 'video')
+            finally:
+                window.store.db.close()
+                window.destroy()
+
     def test_video_workflow_and_tabs(self):
         import yt_dlp
 
@@ -93,7 +143,8 @@ class AppTest(unittest.TestCase):
                 music.vars['template'].set('music_{title}')
                 video.vars['template'].set('video_{title}')
                 video.vars['folder'].set(str(folder))
-                video.vars['resolution'].set('MP4 / 360p')
+                video.container.set('MP4')
+                video.resolution.set('360p')
                 window.notebook.select(video)
                 window.update()
                 self.assertEqual(music.vars['template'].get(), 'music_{title}')
@@ -105,7 +156,7 @@ class AppTest(unittest.TestCase):
                 self.assertEqual(music.vars['template'].get(), 'music_{title}')
                 self.assertEqual(video.vars['template'].get(), 'video_{title}')
                 self.assertEqual(video.vars['resolution'].get(), 'MP4 / 360p')
-                video.vars['resolution'].set('invalid')
+                video.resolution.set('invalid')
                 with patch('app.messagebox.showerror') as error:
                     self.assertIsNone(video.save())
                     error.assert_called_once()
