@@ -21,7 +21,7 @@ exe の再ビルド（[PyInstaller](https://www.pyinstaller.org/en/stable/usage.
 ```powershell
 .venv\Scripts\python.exe -m pip install --require-hashes --only-binary=:all: -r requirements-build.txt
 .venv\Scripts\python.exe prepare_ffmpeg.py
-.venv\Scripts\python.exe build_exe.py
+.venv\Scripts\python.exe build_exe.py 0.1.0
 ```
 
 成果物は `dist/YouTubeDownloader/` です。このフォルダー全体を ZIP 化します。

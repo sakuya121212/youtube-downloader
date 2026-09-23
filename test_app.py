@@ -15,6 +15,20 @@ import app
 
 
 class AppTest(unittest.TestCase):
+    def test_update_release(self):
+        self.assertEqual(app.version_tuple('v0.1.2'), (0, 1, 2))
+        self.assertIsNone(app.version_tuple('latest'))
+        with tempfile.TemporaryDirectory() as directory, patch.object(app, 'RESOURCES', Path(directory)):
+            self.assertIsNone(app.application_version())
+            (Path(directory) / 'VERSION').write_text('0.1.2', encoding='ascii')
+            self.assertEqual(app.application_version(), '0.1.2')
+        self.assertEqual(
+            app.update_release('0.1.2', {'tag_name': 'v0.1.3'}),
+            ('v0.1.3', 'https://github.com/sakuya121212/youtube-downloader/releases/tag/v0.1.3'),
+        )
+        self.assertIsNone(app.update_release('0.1.3', {'tag_name': 'v0.1.3'}))
+        self.assertIsNone(app.update_release('0.1.3', {'tag_name': 'not-a-version'}))
+
     def test_compact_layout_and_progress_states(self):
         with tempfile.TemporaryDirectory() as directory:
             window = app.App(Path(directory) / 'library.sqlite3')

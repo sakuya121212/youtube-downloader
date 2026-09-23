@@ -43,7 +43,7 @@ jobs:
       - name: Test
         run: python -m unittest -v
       - name: Build application
-        run: python build_exe.py
+        run: python build_exe.py $env:VERSION
       - name: Package ZIP and installer
         run: |
           Compress-Archive -Path dist/YouTubeDownloader -DestinationPath "dist/YouTubeDownloader-$env:VERSION-windows-x64.zip"

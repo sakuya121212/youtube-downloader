@@ -8,10 +8,13 @@ import sys
 import tempfile
 import threading
 import time
+import json
+import webbrowser
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from urllib.request import Request, urlopen
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -27,10 +30,41 @@ VIDEO_QUALITIES = tuple(f'{container} / {resolution}' for container in ('MKV', '
 VIDEO_AUDIO = ('音声無変換', 'AAC / 320 kbps', 'AAC / 192 kbps', 'AAC / 128 kbps')
 VIDEO_DEFAULTS = DEFAULTS | {'quality': VIDEO_AUDIO[0], 'resolution': VIDEO_QUALITIES[0]}
 CONVERSION_TIMEOUT = 30 * 60
+RELEASE_API = 'https://api.github.com/repos/sakuya121212/youtube-downloader/releases/latest'
+RELEASE_PAGE = 'https://github.com/sakuya121212/youtube-downloader/releases/tag/'
 
 
 class Cancelled(Exception):
     pass
+
+
+def version_tuple(value):
+    match = re.fullmatch(r'v?(\d+)\.(\d+)\.(\d+)', value)
+    return tuple(map(int, match.groups())) if match else None
+
+
+def application_version():
+    try:
+        version = (RESOURCES / 'VERSION').read_text(encoding='ascii').strip()
+    except OSError:
+        return None
+    return version if version_tuple(version) else None
+
+
+def update_release(current, release):
+    tag = release.get('tag_name') if isinstance(release, dict) else None
+    latest, installed = version_tuple(tag) if isinstance(tag, str) else None, version_tuple(current)
+    if latest and installed and latest > installed:
+        return tag, RELEASE_PAGE + tag
+
+
+def fetch_update(current):
+    try:
+        request = Request(RELEASE_API, headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'YouTubeDownloader'})
+        with urlopen(request, timeout=5) as response:
+            return update_release(current, json.load(response))
+    except (OSError, TypeError, ValueError):
+        return None
 
 
 def check_cancel(cancel):
@@ -314,6 +348,25 @@ class App(tk.Tk):
         self.notebook.select(self.tabs['music'])
         self.protocol('WM_DELETE_WINDOW', self.close)
         self.deiconify()
+        if getattr(sys, 'frozen', False):
+            self.after(1000, self.check_for_update)
+
+    def check_for_update(self):
+        current = application_version()
+        if current:
+            threading.Thread(target=self.find_update, args=(current,), daemon=True).start()
+
+    def find_update(self, current):
+        update = fetch_update(current)
+        if update:
+            try:
+                self.after(0, self.show_update, *update)
+            except (RuntimeError, tk.TclError):
+                pass
+
+    def show_update(self, version, url):
+        if messagebox.askyesno('更新があります', f'YouTube Downloader {version} を利用できます。\n\nダウンロードページを開きますか？', parent=self):
+            webbrowser.open(url)
 
     def close(self):
         if any(tab.busy for tab in self.tabs.values()):

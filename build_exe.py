@@ -3,6 +3,7 @@ import shutil
 import json
 import subprocess
 import sys
+import re
 from importlib.metadata import distributions
 from pathlib import Path
 
@@ -11,12 +12,18 @@ import prepare_ffmpeg
 
 
 root = Path(__file__).resolve().parent
+version = sys.argv[1] if len(sys.argv) == 2 else '0.0.0'
+if not re.fullmatch(r'\d+\.\d+\.\d+', version):
+    raise SystemExit('Version must be major.minor.patch.')
 if sys.version_info < (3, 14, 7):
     raise SystemExit('Python 3.14.7+ is required to build the executable.')
 prepare_ffmpeg.install_archive(prepare_ffmpeg.DIRECTORY / prepare_ffmpeg.ARCHIVE, prepare_ffmpeg.DIRECTORY)
 node = shutil.which('node')
 if not node:
     raise SystemExit('Node.js 22+ is required to build the executable.')
+version_file = root / 'build' / 'VERSION'
+version_file.parent.mkdir(exist_ok=True)
+version_file.write_text(version, encoding='ascii')
 
 PyInstaller.__main__.run([
     str(root / 'app.py'), '--name', 'YouTubeDownloader',
@@ -28,6 +35,7 @@ PyInstaller.__main__.run([
     '--add-binary', f'{root / "tools" / "ffmpeg.exe"}:.',
     '--add-binary', f'{root / "tools" / "ffprobe.exe"}:.',
     '--add-data', f'{root / "tools" / "LICENSE"}:ffmpeg-license',
+    '--add-data', f'{version_file}:.',
 ])
 shutil.copy2(root / 'README.md', root / 'dist' / 'YouTubeDownloader' / 'README.md')
 manifest = {
