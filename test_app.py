@@ -27,7 +27,12 @@ class AppTest(unittest.TestCase):
                     tab.toggle_settings()
                     window.update()
                     self.assertTrue(tab.details.winfo_ismapped())
-                    self.assertGreater(tab.tree.winfo_height(), 30)
+                    self.assertGreater(tab.tree.winfo_height(), 64)
+                    path_field = next(widget for widget in tab.winfo_children()[0].winfo_children()
+                                      if any(child.cget('text') == '保存ファイル' for child in widget.winfo_children()
+                                             if isinstance(child, app.ttk.Label)))
+                    self.assertLessEqual(path_field.winfo_rooty() + path_field.winfo_height(),
+                                         window.winfo_rooty() + window.winfo_height())
                     tab.vars['template'].set('saved_{title}')
                     tab.toggle_settings()
                     self.assertEqual(tab.save()['template'], 'saved_{title}')
@@ -88,7 +93,7 @@ class AppTest(unittest.TestCase):
                 music.vars['template'].set('music_{title}')
                 video.vars['template'].set('video_{title}')
                 video.vars['folder'].set(str(folder))
-                video.vars['resolution'].set('MKV / 360p')
+                video.vars['resolution'].set('MP4 / 360p')
                 window.notebook.select(video)
                 window.update()
                 self.assertEqual(music.vars['template'].get(), 'music_{title}')
@@ -99,7 +104,7 @@ class AppTest(unittest.TestCase):
                 self.assertEqual(window.notebook.select(), str(music))
                 self.assertEqual(music.vars['template'].get(), 'music_{title}')
                 self.assertEqual(video.vars['template'].get(), 'video_{title}')
-                self.assertEqual(video.vars['resolution'].get(), 'MKV / 360p')
+                self.assertEqual(video.vars['resolution'].get(), 'MP4 / 360p')
                 video.vars['resolution'].set('invalid')
                 with patch('app.messagebox.showerror') as error:
                     self.assertIsNone(video.save())
@@ -132,7 +137,10 @@ class AppTest(unittest.TestCase):
                                                        'extractor': 'local', 'formats': formats}, download=download)
 
                 with patch('yt_dlp.YoutubeDL', LocalYoutubeDL):
-                    for resolution, quality in [('MKV / 360p', quality) for quality in app.VIDEO_AUDIO] + [('MKV / 720p', app.VIDEO_AUDIO[0]), (app.VIDEO_QUALITIES[0], app.VIDEO_AUDIO[0])]:
+                    cases = [(f'{container} / {resolution}', quality) for container in ('MKV', 'MP4')
+                             for resolution, quality in [('360p', quality) for quality in app.VIDEO_AUDIO]
+                             + [('720p', app.VIDEO_AUDIO[0]), ('最高画質', app.VIDEO_AUDIO[0])]]
+                    for resolution, quality in cases:
                         settings = app.VIDEO_DEFAULTS | {'folder': str(folder), 'resolution': resolution, 'quality': quality}
                         app.download('https://www.youtube.com/watch?v=BaW_jenozKc', settings, video.events, mode='video')
                         messages = []
@@ -142,18 +150,18 @@ class AppTest(unittest.TestCase):
                         self.assertEqual(kind, 'complete', payload)
                         self.assertTrue(any(event == 'progress' and value[0] is None for event, value in messages))
                         info, selected, path = payload
-                        self.assertEqual(path.suffix, '.mkv')
+                        self.assertEqual(path.suffix, '.' + resolution.split(' / ')[0].lower())
                         probe = subprocess.run([str(app.FFMPEG.with_name('ffprobe.exe')), '-v', 'error',
                                                 '-show_streams', '-of', 'json', str(path)], check=True, capture_output=True, text=True)
                         streams = json.loads(probe.stdout)['streams']
                         self.assertEqual([stream['codec_type'] for stream in streams], ['video', 'audio'])
-                        self.assertEqual(streams[0]['height'], 360 if resolution == 'MKV / 360p' else 720)
+                        self.assertEqual(streams[0]['height'], 360 if resolution.endswith(' / 360p') else 720)
                         self.assertEqual(streams[1]['codec_name'], 'aac')
                         video.events.put((kind, payload))
                         video.poll()
-                self.assertEqual(len(window.store.history('video')), 6)
+                self.assertEqual(len(window.store.history('video')), len(cases))
                 self.assertEqual(len(window.store.history()), 1)
-                self.assertEqual(len({row[4] for row in window.store.history('video')}), 6)
+                self.assertEqual(len({row[4] for row in window.store.history('video')}), len(cases))
                 self.assertFalse(list(folder.glob('.video-*')))
                 video.url.set('https://youtu.be/BaW_jenozKc')
                 with patch('app.messagebox.askyesno', return_value=False), patch('app.threading.Thread') as worker:

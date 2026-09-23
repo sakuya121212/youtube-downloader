@@ -22,7 +22,8 @@ FFMPEG = (RESOURCES if getattr(sys, 'frozen', False) else ROOT / 'tools') / 'ffm
 ORIGINAL_AUDIO = 'WebM / M4A / 無変換'
 QUALITIES = ('MP3 / 320 kbps', 'MP3 / 192 kbps', 'MP3 / 128 kbps', ORIGINAL_AUDIO)
 DEFAULTS = {'folder': str(Path.home() / 'Downloads'), 'quality': QUALITIES[0], 'template': '{title}'}
-VIDEO_QUALITIES = ('MKV / 最高画質', 'MKV / 2160p', 'MKV / 1440p', 'MKV / 1080p', 'MKV / 720p', 'MKV / 480p', 'MKV / 360p')
+VIDEO_QUALITIES = tuple(f'{container} / {resolution}' for container in ('MKV', 'MP4')
+                        for resolution in ('最高画質', '2160p', '1440p', '1080p', '720p', '480p', '360p'))
 VIDEO_AUDIO = ('音声無変換', 'AAC / 320 kbps', 'AAC / 192 kbps', 'AAC / 128 kbps')
 VIDEO_DEFAULTS = DEFAULTS | {'quality': VIDEO_AUDIO[0], 'resolution': VIDEO_QUALITIES[0]}
 CONVERSION_TIMEOUT = 30 * 60
@@ -189,9 +190,11 @@ def download(url, settings, events, cancel=None, mode='music'):
                 'js_runtimes': {'node': {'path': str(RESOURCES / 'node.exe')} if (RESOURCES / 'node.exe').is_file() else {}, 'deno': {}},
             }
             if is_video:
-                resolution = settings['resolution']
-                limit = '' if resolution == VIDEO_QUALITIES[0] else f'[height<={int(resolution.split(" / ")[1][:-1])}]'
+                container, resolution = settings['resolution'].split(' / ')
+                limit = '' if resolution == '最高画質' else f'[height<={int(resolution[:-1])}]'
                 options['format'] = f'bestvideo{limit}+bestaudio/best{limit}'
+                if container == 'MP4':
+                    options['format'] = f'bestvideo[ext=mp4]{limit}+bestaudio[ext=m4a]/best[ext=mp4]{limit}'
                 options['merge_output_format'] = 'mkv'
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -199,7 +202,7 @@ def download(url, settings, events, cancel=None, mode='music'):
             check_cancel(cancel)
             if is_video or settings['quality'] != ORIGINAL_AUDIO:
                 events.put(('progress', (None, '動画を処理中…' if is_video else 'MP3 に変換中…')))
-                converted = Path(temp) / ('converted.mkv' if is_video else 'converted.mp3')
+                converted = Path(temp) / (f'converted.{container.lower()}' if is_video else 'converted.mp3')
                 if is_video:
                     codec = ['-map', '0:v:0', '-map', '0:a:0?', '-c:v', 'copy']
                     codec += ['-c:a', 'copy'] if settings['quality'] == VIDEO_AUDIO[0] else [
@@ -247,7 +250,7 @@ class App(tk.Tk):
         super().__init__()
         self.title('YouTube Downloader')
         self.geometry('960x720')
-        self.minsize(800, 600)
+        self.minsize(800, 700)
         self.withdraw()
         data_path = database if database is not None else Path(os.environ.get('LOCALAPPDATA') or Path.home() / 'AppData' / 'Local') / 'YouTubeMusicDownloader' / 'library.sqlite3'
         try:
@@ -265,10 +268,41 @@ class App(tk.Tk):
             raise SystemExit(1)
         style = ttk.Style(self)
         style.theme_use('clam')
-        style.configure('.', font=('Yu Gothic UI', 10))
-        style.configure('Title.TLabel', font=('Yu Gothic UI', 22, 'bold'))
-        style.configure('Accent.TButton', padding=(22, 12), background='#2458bd', foreground='white')
-        style.configure('Treeview', rowheight=30)
+        style.configure('.', font=('Yu Gothic UI', 10), background='white', foreground='#172b40')
+        style.configure('TFrame', background='white')
+        style.configure('TLabel', background='white')
+        style.configure('TButton', padding=(12, 4), background='#f1f5f9', bordercolor='#d4dee8',
+                        lightcolor='#f1f5f9', darkcolor='#f1f5f9', relief='flat')
+        style.map('TButton', background=[('disabled', '#f1f5f9'), ('pressed', '#dce5ee'), ('active', '#e5edf5')],
+                  foreground=[('disabled', '#738396')])
+        style.configure('TEntry', padding=4, fieldbackground='white', bordercolor='#cbd5e1')
+        style.configure('TCombobox', padding=3, fieldbackground='white', background='#f1f5f9', bordercolor='#cbd5e1')
+        style.map('TCombobox', fieldbackground=[('readonly', 'white')], foreground=[('readonly', '#172b40')])
+        style.configure('TLabelframe', background='white', bordercolor='#dbe4ee', relief='solid', borderwidth=1)
+        style.configure('TLabelframe.Label', background='white', foreground='#40536b', font=('Yu Gothic UI', 10, 'bold'))
+        style.configure('TNotebook', background='#eaf0f6', borderwidth=0, tabmargins=(20, 10, 20, 0))
+        style.configure('TNotebook.Tab', padding=(22, 8), background='#eaf0f6', font=('Yu Gothic UI', 10, 'bold'))
+        style.map('TNotebook.Tab', background=[('selected', 'white'), ('active', '#f8fafc')],
+                  foreground=[('selected', '#172b40'), ('!selected', '#52657b')])
+        style.configure('Treeview', rowheight=32, background='white', fieldbackground='white', bordercolor='#dbe4ee')
+        style.configure('Treeview.Heading', padding=(8, 7), background='#f1f5f9', foreground='#40536b',
+                        font=('Yu Gothic UI', 10, 'bold'), relief='flat')
+        for mode, accent, hover, tint in (
+            ('music', '#2458bd', '#19469d', '#eff5ff'),
+            ('video', '#147d52', '#0d6140', '#edf8f1'),
+        ):
+            style.configure(f'{mode}.TFrame', background=tint)
+            style.configure(f'{mode}.TLabel', background=tint, foreground='#52657b')
+            style.configure(f'{mode}.Title.TLabel', background=tint, foreground=accent, font=('Yu Gothic UI', 24, 'bold'))
+            style.configure(f'{mode}.Section.TLabel', background=tint, foreground='#172b40', font=('Yu Gothic UI', 11, 'bold'))
+            style.configure(f'{mode}.Accent.TButton', padding=(22, 12), background=accent, foreground='white',
+                            bordercolor=accent, lightcolor=accent, darkcolor=accent, font=('Yu Gothic UI', 10, 'bold'))
+            style.map(f'{mode}.Accent.TButton', background=[('disabled', '#dbe4ee'), ('pressed', hover), ('active', hover)],
+                      foreground=[('disabled', '#52657b'), ('!disabled', 'white')],
+                      bordercolor=[('disabled', '#dbe4ee'), ('focus', hover)])
+            style.configure(f'{mode}.Horizontal.TProgressbar', background=accent, troughcolor='#dfe8ef',
+                            borderwidth=0, lightcolor=accent, darkcolor=accent, thickness=6)
+            style.map(f'{mode}.Treeview', background=[('selected', accent)], foreground=[('selected', 'white')])
         self.close_pending = False
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill='both', expand=True)
@@ -312,49 +346,54 @@ class DownloadTab(ttk.Frame):
         self.vars = {key: tk.StringVar(value=value) for key, value in saved_settings.items()}
         self.url = tk.StringVar()
         self.status = tk.StringVar(value='動画の URL を貼り付けてください。')
-        outer = ttk.Frame(self, padding=24)
+        outer = ttk.Frame(self, padding=(24, 8), style=f'{mode}.TFrame')
         outer.pack(fill='both', expand=True)
-        ttk.Label(outer, text='Video Download' if mode == 'video' else 'Music Download', style='Title.TLabel').pack(anchor='w')
-        ttk.Label(outer, text='動画 URL').pack(anchor='w')
-        row = ttk.Frame(outer)
-        row.pack(fill='x', pady=(6, 16))
+        ttk.Label(outer, text='Video Download' if mode == 'video' else 'Music Download', style=f'{mode}.Title.TLabel').pack(anchor='w')
+        ttk.Label(outer, text='動画 URL', style=f'{mode}.Section.TLabel').pack(anchor='w')
+        row = ttk.Frame(outer, style=f'{mode}.TFrame')
+        row.pack(fill='x', pady=(6, 14))
         entry = ttk.Entry(row, textvariable=self.url, font=('Segoe UI', 12))
-        entry.pack(side='left', fill='x', expand=True, ipady=9, padx=(0, 12))
+        entry.pack(side='left', fill='x', expand=True, ipady=5, padx=(0, 12))
         entry.bind('<Return>', lambda event: self.start())
-        self.button = ttk.Button(row, text='Download', style='Accent.TButton', command=self.start)
+        self.button = ttk.Button(row, text='Download', style=f'{mode}.Accent.TButton', command=self.start)
         self.button.pack(side='right')
         self.cancel_button = ttk.Button(row, text='キャンセル', command=self.cancel, state='disabled')
         self.cancel_button.pack(side='right', padx=(0, 8))
-        settings = ttk.LabelFrame(outer, text='設定', padding=14)
+        settings = ttk.LabelFrame(outer, text=' 保存設定 ', padding=(14, 8))
         settings.pack(fill='x')
         settings.columnconfigure(1, weight=1)
         ttk.Label(settings, text='保存先').grid(row=0, column=0, sticky='w', padx=(0, 15))
-        ttk.Entry(settings, textvariable=self.vars['folder']).grid(row=0, column=1, sticky='ew', pady=5)
+        ttk.Entry(settings, textvariable=self.vars['folder']).grid(row=0, column=1, sticky='ew', pady=3)
         ttk.Button(settings, text='参照…', command=self.browse).grid(row=0, column=2, padx=(8, 0))
         ttk.Label(settings, text='音質').grid(row=1, column=0, sticky='w')
-        ttk.Combobox(settings, textvariable=self.vars['quality'], values=self.qualities, state='readonly').grid(row=1, column=1, sticky='ew', pady=5)
+        ttk.Combobox(settings, textvariable=self.vars['quality'], values=self.qualities, state='readonly').grid(row=1, column=1, sticky='ew', pady=3)
         if mode == 'video':
             ttk.Label(settings, text='画質').grid(row=2, column=0, sticky='w')
-            ttk.Combobox(settings, textvariable=self.vars['resolution'], values=VIDEO_QUALITIES, state='readonly').grid(row=2, column=1, sticky='ew', pady=5)
+            ttk.Combobox(settings, textvariable=self.vars['resolution'], values=VIDEO_QUALITIES, state='readonly').grid(row=2, column=1, sticky='ew', pady=3)
         self.details_button = ttk.Button(settings, text='詳細設定を開く', command=self.toggle_settings)
         self.details_button.grid(row=3, column=0, columnspan=3, sticky='w', pady=(6, 0))
         self.details = ttk.Frame(settings)
-        self.details.grid(row=4, column=0, columnspan=3, sticky='ew', pady=(8, 0))
+        self.details.grid(row=4, column=0, columnspan=3, sticky='ew', pady=(4, 0))
         self.details.columnconfigure(1, weight=1)
         ttk.Label(self.details, text='ファイル名').grid(row=0, column=0, sticky='w', padx=(0, 15))
-        ttk.Entry(self.details, textvariable=self.vars['template']).grid(row=0, column=1, columnspan=2, sticky='ew', pady=5)
-        ttk.Label(self.details, text='例: {title}  /  {uploader} - {title}\n拡張子は自動で付きます。設定は終了時・Download 時にも保存します。').grid(row=1, column=1, columnspan=2, sticky='w', pady=4)
+        ttk.Entry(self.details, textvariable=self.vars['template']).grid(row=0, column=1, columnspan=2, sticky='ew', pady=3)
+        ttk.Label(self.details, text='例: {uploader} - {title}  ·  拡張子は自動で付きます。').grid(row=1, column=1, columnspan=2, sticky='w', pady=2)
         ttk.Button(self.details, text='設定を保存', command=self.save).grid(row=2, column=2, sticky='e')
         ttk.Button(self.details, text='初期設定にリセット', command=self.reset_settings).grid(row=2, column=1, sticky='w')
         self.details.grid_remove()
-        ttk.Label(outer, textvariable=self.status, wraplength=880).pack(anchor='w', pady=(14, 5))
-        self.progress = ttk.Progressbar(outer, maximum=100)
-        self.progress.pack(fill='x', pady=(0, 16))
-        ttk.Label(outer, text='ダウンロード履歴 · ダブルクリックで保存フォルダーを開く').pack(anchor='w', pady=(0, 8))
+        status = ttk.Label(outer, textvariable=self.status, style=f'{mode}.TLabel')
+        status.pack(fill='x', pady=(12, 5))
+        status.bind('<Configure>', lambda event: status.configure(wraplength=max(1, event.width)))
+        self.progress = ttk.Progressbar(outer, maximum=100, style=f'{mode}.Horizontal.TProgressbar')
+        self.progress.pack(fill='x', pady=(0, 12))
+        history_heading = ttk.Frame(outer, style=f'{mode}.TFrame')
+        history_heading.pack(fill='x', pady=(0, 8))
+        ttk.Label(history_heading, text='ダウンロード履歴', style=f'{mode}.Section.TLabel').pack(side='left')
+        ttk.Label(history_heading, text='ダブルクリックで保存フォルダーを開く', style=f'{mode}.TLabel').pack(side='right')
         history = ttk.Frame(outer)
         history.pack(fill='both', expand=True)
         columns = ('date', 'title', 'uploader', 'quality', 'path')
-        self.tree = ttk.Treeview(history, columns=columns, displaycolumns=columns[:4], show='headings', height=6, selectmode='browse')
+        self.tree = ttk.Treeview(history, columns=columns, displaycolumns=columns[:4], show='headings', height=6, selectmode='browse', style=f'{mode}.Treeview')
         for col, label, width in zip(columns[:4], ('日時', '動画名', '投稿者', '画質 / 音質' if mode == 'video' else '音質'), (150, 230, 110, 190)):
             self.tree.heading(col, text=label)
             self.tree.column(col, width=width, minwidth=80, stretch=col == 'title')
@@ -367,9 +406,9 @@ class DownloadTab(ttk.Frame):
         vertical.grid(row=0, column=1, sticky='ns')
         horizontal.grid(row=1, column=0, sticky='ew')
         self.history_path = tk.StringVar()
-        detail = ttk.Frame(outer)
-        detail.pack(fill='x', pady=(8, 0))
-        ttk.Label(detail, text='選択した保存ファイル').pack(side='left', padx=(0, 8))
+        detail = ttk.Frame(outer, style=f'{mode}.TFrame')
+        detail.pack(side='bottom', fill='x', pady=(8, 0), before=history)
+        ttk.Label(detail, text='保存ファイル', style=f'{mode}.TLabel').pack(side='left', padx=(0, 8))
         ttk.Entry(detail, textvariable=self.history_path, state='readonly').pack(side='left', fill='x', expand=True)
         self.tree.bind('<<TreeviewSelect>>', self.select_history)
         self.tree.bind('<Double-1>', self.open_folder)
